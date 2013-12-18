@@ -4,6 +4,8 @@ use Moaction\Jsonrpc\Common\Error;
 use Moaction\Jsonrpc\Common\Request;
 use Moaction\Jsonrpc\Common\Response;
 use Moaction\Jsonrpc\Server\BasicServer;
+use Moaction\Jsonrpc\Server\InvalidParamException;
+use Moaction\Jsonrpc\Server\ServerMethod;
 
 class BasicServerTest extends PHPUnit_Framework_TestCase
 {
@@ -19,128 +21,6 @@ class BasicServerTest extends PHPUnit_Framework_TestCase
 	}
 
 	/**
-	 * @covers \Moaction\Jsonrpc\Server\BasicServer::sortParams
-	 */
-	public function testSortParams()
-	{
-		$server = new BasicServer();
-
-		$params = array(
-			'a' => 5,
-			'b' => 'string',
-			'c' => array('x'),
-		);
-		$master = array('c', 'a', 'b');
-		$expected = array(
-			array('x'),
-			5,
-			'string',
-		);
-
-		$reflectionObj = new ReflectionObject($server);
-		$reflectionMethod = $reflectionObj->getMethod('sortParams');
-		$reflectionMethod->setAccessible(true);
-		$result = $reflectionMethod->invoke($server, $params, $master);
-		$this->assertEquals($expected, $result);
-
-		$params = array(
-			'd' => 1,
-			'e' => 'error',
-		);
-		$master = array('d');
-
-		$this->setExpectedException('\InvalidArgumentException', 'Unexpected parameter e');
-		$reflectionMethod->invoke($server, $params, $master);
-	}
-
-
-	/**
-	 * @covers       \Moaction\Jsonrpc\Server\BasicServer::getRequiredParams
-	 * @dataProvider providerTestGetRequiredParams
-	 */
-	public function testGetRequiredParams($method, $expected)
-	{
-		$method = new ReflectionFunction($method);
-		$params = $method->getParameters();
-
-		$server = $this->getServerMock(array('getParams'));
-		$server->expects($this->any())
-			->method('getParams')
-			->will($this->returnValue($params));
-
-		$reflectionObj = new ReflectionObject($server);
-		$reflectionMethod = $reflectionObj->getMethod('getRequiredParams');
-		$reflectionMethod->setAccessible(true);
-		$result = $reflectionMethod->invoke($server, 'method');
-		$this->assertEquals($expected, $result);
-	}
-
-	/**
-	 * @return array
-	 */
-	public function providerTestGetRequiredParams()
-	{
-		$noArgs = function () {
-		};
-		$optionalArg = function ($a = null) {
-		};
-		$oneArg = function ($b, $c = null) {
-		};
-		$severalArgs = function ($d, $e, $f = null) {
-		};
-
-		return array(
-			'No args'      => array($noArgs, array()),
-			'Optional arg' => array($optionalArg, array()),
-			'One arg'      => array($oneArg, array('b')),
-			'Several args' => array($severalArgs, array('d', 'e')),
-		);
-	}
-
-	/**
-	 * @covers \Moaction\Jsonrpc\Server\BasicServer::getAllParams
-	 */
-	public function testGetAllParams()
-	{
-		$method = new ReflectionFunction(function ($a, $b = null) {
-		});
-		$params = $method->getParameters();
-
-		$server = $this->getServerMock(array('getParams'));
-		$server->expects($this->any())
-			->method('getParams')
-			->will($this->returnValue($params));
-
-		$reflectionObj = new ReflectionObject($server);
-		$reflectionMethod = $reflectionObj->getMethod('getAllParams');
-		$reflectionMethod->setAccessible(true);
-		$result = $reflectionMethod->invoke($server, 'method');
-
-		$this->assertEquals(array('a', 'b'), $result);
-	}
-
-	/**
-	 * @covers \Moaction\Jsonrpc\Server\BasicServer::getParams
-	 * @covers \Moaction\Jsonrpc\Server\BasicServer::addMethod
-	 */
-	public function testGetParams()
-	{
-		$method = function($a, $b = null) {};
-		$reflection = new ReflectionFunction($method);
-
-		$server = new BasicServer();
-		$server->addMethod('test', $method);
-
-		$reflectionObj = new ReflectionObject($server);
-		$reflectionMethod = $reflectionObj->getMethod('getParams');
-		$reflectionMethod->setAccessible(true);
-
-		$result = $reflectionMethod->invoke($server, 'test');
-		$this->assertEquals($reflection->getParameters(), $result);
-	}
-
-	/**
-	 * @covers \Moaction\Jsonrpc\Server\BasicServer::addMethod
 	 * @covers \Moaction\Jsonrpc\Server\BasicServer::methodExists
 	 * @covers \Moaction\Jsonrpc\Server\BasicServer::removeMethod
 	 */
@@ -152,6 +32,44 @@ class BasicServerTest extends PHPUnit_Framework_TestCase
 
 		$server->removeMethod('test');
 		$this->assertFalse($server->methodExists('test'));
+	}
+
+	/**
+	 * @covers \Moaction\Jsonrpc\Server\BasicServer::addMethod
+	 * @dataProvider providerTestAddMethod
+	 */
+	public function testAddMethod($function, $expected)
+	{
+		$server = new BasicServer();
+
+		if (!$expected) {
+			$this->setExpectedException('\InvalidArgumentException', 'Method is not callable: test');
+		}
+		$reflection = new ReflectionObject($server);
+		$methods = $reflection->getProperty('methods');
+		$methods->setAccessible(true);
+
+		$server->addMethod('test', $function);
+
+		$methods = $methods->getValue($server);
+		$this->assertEquals(array('test' => $expected), $methods);
+	}
+
+	/**
+	 * @return array
+	 */
+	public function providerTestAddMethod()
+	{
+		$method1 = function($a) {};
+		$expected1 = new ServerMethod($method1);
+
+		$method2 = new ServerMethod(function($b) {});
+
+		return array(
+			'Function' => array($method1, $expected1),
+			'Object'   => array($method2, $method2),
+			'Invalid'  => array(12345, false),
+		);
 	}
 
 	/**
@@ -221,35 +139,29 @@ class BasicServerTest extends PHPUnit_Framework_TestCase
 	 * @covers \Moaction\Jsonrpc\Server\BasicServer::singleCall
 	 * @dataProvider providerTestSingleCall
 	 */
-	public function testSingleCall($method, $required, $sorted, $expected)
+	public function testSingleCall($requestMethod, $expected)
 	{
-		$server = $this->getServerMock(array('getRequiredParams', 'sortParams'));
-		$self = $this;
-		$server->addMethod('test', function() use ($self, $sorted) {
-			// проверяем, что функция вызвалась со всеми необходимыми параметрами
-			$sorted = array_values($sorted);
-			$params = func_get_args();
-			foreach ($sorted as $i => $param) {
-				$self->assertEquals($param, $params[$i]);
-			}
-			return 'Hello world';
-		});
-
-		$server->expects($this->any())
-			->method('getRequiredParams')
-			->will($this->returnValue($required));
-
-		$server->expects($this->any())
-			->method('sortParams')
-			->will($this->returnValue($sorted));
+		$server = new BasicServer();
 
 		$reflectionObj = new ReflectionObject($server);
 		$reflectionMethod = $reflectionObj->getMethod('singleCall');
 		$reflectionMethod->setAccessible(true);
 
+		/** @var PHPUnit_Framework_MockObject_MockObject|ServerMethod $method */
+		$method = $this->getMockBuilder('\Moaction\Jsonrpc\Server\ServerMethod')
+			->disableOriginalConstructor()
+			->setMethods(array('call'))
+			->getMock();
+
+		$method->expects($this->any())
+			->method('call')
+			->will($this->returnValue('Hello world'));
+
+		$server->addMethod('test', $method);
+
 		$request = new Request();
 		$request->setId(1);
-		$request->setMethod($method);
+		$request->setMethod($requestMethod);
 
 		$result = $reflectionMethod->invoke($server, $request);
 		$this->assertEquals($expected, $result);
@@ -264,54 +176,62 @@ class BasicServerTest extends PHPUnit_Framework_TestCase
 		$invalidMethod->setError(new Error(Error::ERROR_METHOD_NOT_FOUND, null, array('method' => 'Invalid_method')));
 		$invalidMethod->setId(1);
 
-		$requiredParams = new Response();
-		$requiredParams->setError(new Error(Error::ERROR_INVALID_PARAMS, 'Required parameter not found: param1'));
-		$requiredParams->setId(1);
-
 		$response = new Response();
 		$response->setResult('Hello world');
 		$response->setId(1);
 
 		return array(
-			'Invalid method' => array('Invalid_method', array(), array(), $invalidMethod),
-			'Required param' => array('test', array('param1'), array(), $requiredParams),
-			'Method call'    => array('test', array(), array('param1' => 'value1'), $response),
+			'Invalid method' => array('Invalid_method', $invalidMethod),
+			'Method call'    => array('test', $response),
 		);
 	}
 
 	/**
 	 * @covers \Moaction\Jsonrpc\Server\BasicServer::singleCall
+	 * @dataProvider providerTestExceptionCall
 	 */
-	public function testExceptionCall()
+	public function testExceptionCall($exception, $expected)
 	{
-		$request = new Request();
-		$request->setMethod('test');
-
-		$server = $this->getServerMock(array('getRequiredParams', 'sortParams'));
-		$server->expects($this->once())
-			->method('getRequiredParams')
-			->will($this->returnValue(array()));
-		$server->expects($this->once())
-			->method('sortParams')
-			->will($this->returnValue(array()));
-
-		$server->addMethod('test', function() {
-			throw new \Exception('WOOOHOO', 1133);
-		});
+		$server = new BasicServer();
 
 		$reflectionObj = new ReflectionObject($server);
 		$reflectionMethod = $reflectionObj->getMethod('singleCall');
 		$reflectionMethod->setAccessible(true);
 
-		// Request misses id.
+		/** @var PHPUnit_Framework_MockObject_MockObject|ServerMethod $method */
+		$method = $this->getMockBuilder('\Moaction\Jsonrpc\Server\ServerMethod')
+			->disableOriginalConstructor()
+			->setMethods(array('call'))
+			->getMock();
+
+		$method->expects($this->any())
+			->method('call')
+			->will($this->throwException($exception));
+
+		$server->addMethod('test', $method);
+
 		$request = new Request();
 		$request->setMethod('test');
 
 		$result = $reflectionMethod->invoke($server, $request);
-		$response = new Response();
-		$response->setError(new Error(1133, 'WOOOHOO'));
+		$this->assertEquals($expected, $result);
+	}
 
-		$this->assertEquals($response, $result);
+	/**
+	 * @return array
+	 */
+	public function providerTestExceptionCall()
+	{
+		$response1 = new Response();
+		$response1->setError(new Error(Error::ERROR_INVALID_PARAMS, 'Param expected'));
+
+		$response2 = new Response();
+		$response2->setError(new Error(1122, 'Method exception'));
+
+		return array(
+			'Invalid params'    => array(new InvalidParamException('Param expected'), $response1),
+			'Method exceptions' => array(new \Exception('Method exception', 1122), $response2),
+		);
 	}
 
 	/**

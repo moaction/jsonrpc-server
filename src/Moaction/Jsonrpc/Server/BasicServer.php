@@ -12,7 +12,7 @@ use Psr\Log\LoggerInterface;
 class BasicServer implements ServerInterface, LoggerAwareInterface
 {
 	/**
-	 * @var array
+	 * @var ServerMethod[]
 	 */
 	private $methods = array();
 
@@ -24,9 +24,17 @@ class BasicServer implements ServerInterface, LoggerAwareInterface
 	/**
 	 * @inheritdoc
 	 */
-	public function addMethod($name, Callable $function)
+	public function addMethod($name, $method)
 	{
-		$this->methods[$name] = $function;
+		if ($method instanceof ServerMethod) {
+			$this->methods[$name] = $method;
+		}
+		else {
+			if (!is_callable($method)) {
+				throw new \InvalidArgumentException('Method is not callable: ' . $name);
+			}
+			$this->methods[$name] = new ServerMethod($method);
+		}
 		return $this;
 	}
 
@@ -114,26 +122,20 @@ class BasicServer implements ServerInterface, LoggerAwareInterface
 			);
 		}
 
-		// Checking required params
-		$params = $request->getParams();
-		foreach ($this->getRequiredParams($request->getMethod()) as $param) {
-			if (!isset($params[$param])) {
-				return $this->createErrorResponse(
-					Error::ERROR_INVALID_PARAMS,
-					'Required parameter not found: ' . $param,
-					$request->getId()
-				);
-			}
-		}
-
-		$params = $this->sortParams($request->getParams() ?: array(), $this->getAllParams($request->getMethod()));
 		try {
-			$result = call_user_func_array($this->methods[$request->getMethod()], $params);
+			$result = $this->methods[$request->getMethod()]->call($request->getParams());
 
 			$response = new Response();
 			$response->setResult($result);
 			$response->setId($request->getId());
 			return $response;
+		}
+		catch(InvalidParamException $e) {
+			return $this->createErrorResponse(
+				Error::ERROR_INVALID_PARAMS,
+				$e->getMessage(),
+				$request->getId()
+			);
 		}
 		catch(\Exception $e) {
 			return $this->createErrorResponse($e->getCode() ?: null, $e->getMessage() ?: null, $request->getId());
@@ -162,72 +164,6 @@ class BasicServer implements ServerInterface, LoggerAwareInterface
 	public function setLogger(LoggerInterface $logger)
 	{
 		$this->logger = $logger;
-	}
-
-	/**
-	 * @param string $method
-	 * @return \ReflectionParameter[]
-	 */
-	protected function getParams($method)
-	{
-		$function = new \ReflectionFunction($this->methods[$method]);
-		return $function->getParameters();
-	}
-
-	/**
-	 * @param string $method
-	 * @return array
-	 */
-	protected function getRequiredParams($method)
-	{
-		$requiredParams = array();
-
-		foreach ($this->getParams($method) as $param) {
-			if (!$param->isOptional()) {
-				$requiredParams[] = $param->getName();
-			}
-		}
-
-		return $requiredParams;
-	}
-
-	/**
-	 * @param string $method
-	 * @return array
-	 */
-	protected function getAllParams($method)
-	{
-		$params = array();
-		foreach ($this->getParams($method) as $param) {
-			$params[] = $param->getName();
-		}
-		return $params;
-	}
-
-	/**
-	 * Sort method params according to function expected arguments
-	 *
-	 * @param array $original
-	 * @param array $master
-	 * @return array
-	 */
-	protected function sortParams($original, $master)
-	{
-		uksort($original, function($a, $b) use ($master) {
-			$aIndex = array_search($a, $master);
-			if ($aIndex === false) {
-				throw new \InvalidArgumentException('Unexpected parameter ' . $a);
-			}
-
-			$bIndex = array_search($b, $master);
-			if ($bIndex === false) {
-				throw new \InvalidArgumentException('Unexpected parameter ' . $b);
-			}
-
-			return $aIndex < $bIndex ? -1 : 1;
-		});
-
-		return array_values($original);
 	}
 
 	/**

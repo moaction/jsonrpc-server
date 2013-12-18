@@ -2,15 +2,13 @@
 
 namespace Moaction\Jsonrpc\Server;
 
-use Moaction\Jsonrpc\Common\Response;
-
 interface ServerInterface {
 	/**
 	 * @param $name
-	 * @param callable $function
+	 * @param callable|ServerMethod $method
 	 * @return self
 	 */
-	public function addMethod($name, Callable $function);
+	public function addMethod($name, $method);
 
 	/**
 	 * @param $name
