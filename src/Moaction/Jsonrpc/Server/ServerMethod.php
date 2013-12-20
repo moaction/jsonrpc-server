@@ -25,12 +25,23 @@ class ServerMethod {
 
 	/**
 	 * @param callable $callable
+	 * @throws \InvalidArgumentException
 	 */
 	public function __construct($callable)
 	{
-		$r = new \ReflectionFunction($callable);
+		if (is_array($callable)) {
+			if (!count($callable) === 2) {
+				throw new \InvalidArgumentException('Invalid callable supplied');
+			}
+			$callable = array_values($callable);
+			$object = new \ReflectionObject($callable[0]);
+			$function = $object->getMethod($callable[1]);
+		}
+		else {
+			$function = new \ReflectionFunction($callable);
+		}
 
-		foreach ($r->getParameters() as $param) {
+		foreach ($function->getParameters() as $param) {
 			$this->allParams[] = $param->getName();
 
 			if ($param->isOptional()) {
